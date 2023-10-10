@@ -79,6 +79,23 @@ class MultiSafepayLibrary
     }
 
     /**
+     * Check if issuers are accessible because the API is available
+     *
+     * @param object $method
+     *
+     * @return bool|array
+     */
+    public function getIdealIssuers(object $method): bool|array
+    {
+        try {
+            $sdk = $this->getSdkObject($method);
+            return $sdk->getIssuerManager()->getIssuersByGatewayCode('IDEAL');
+        } catch (ApiException | ClientExceptionInterface) {
+            return false;
+        }
+    }
+
+    /**
      * @param array $order
      * @param object $method
      * @param object $cart
