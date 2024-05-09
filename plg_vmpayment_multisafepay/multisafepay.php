@@ -85,7 +85,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             'cost_per_transaction' => 'decimal(10,2)',
             'cost_percent_total' => 'decimal(10,2)',
             'tax_id' => 'smallint(6)',
-            'multisafepay_transaction_id' => 'int(10) UNSIGNED',
+            'multisafepay_transaction_id' => 'bigint(19) UNSIGNED',
             'multisafepay_gateway' => 'varchar(64)',
             'multisafepay_ip_address' => 'varchar(39)' // IPv6 max length
         ];
