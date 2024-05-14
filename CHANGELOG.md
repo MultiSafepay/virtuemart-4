@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ***
 
+## 2.0.2
+Release date: May, 14th 2024
+
+### Fixed
++ PLGVIR4-53: Fix the "multisafepay_transaction_id" field to support larger values for the new PSP ID standard
+
+***
+
 ## 2.0.1
 Release date: Sep, 6th 2023
 
