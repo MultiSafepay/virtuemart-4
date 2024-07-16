@@ -763,6 +763,11 @@ class MultiSafepayLibrary
             $sdk = $this->getSdkObject($method);
             $transaction_manager = $sdk->getTransactionManager();
             $transaction = $transaction_manager->get($order_id);
+            if ($transaction->getStatus() === 'refunded') {
+                // Therefore, the transaction has already been
+                // refunded from the MultiSafepay dashboard
+                return true;
+            }
             $refund_request = (new RefundRequest())->addMoney($amount);
             $transaction_manager->refund($transaction, $refund_request);
         } catch (ApiException | ClientExceptionInterface $e) {
