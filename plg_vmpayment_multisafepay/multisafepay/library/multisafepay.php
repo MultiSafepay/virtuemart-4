@@ -28,7 +28,6 @@ use Joomla\CMS\Application\SiteApplication;
 use Joomla\CMS\Language\Language;
 use MultiSafepay\Api\Transactions\OrderRequest;
 use MultiSafepay\Api\Transactions\OrderRequest\Arguments\CustomerDetails;
-use MultiSafepay\Api\Transactions\OrderRequest\Arguments\GatewayInfo\Issuer;
 use MultiSafepay\Api\Transactions\OrderRequest\Arguments\GatewayInfoInterface;
 use MultiSafepay\Api\Transactions\OrderRequest\Arguments\PaymentOptions;
 use MultiSafepay\Api\Transactions\OrderRequest\Arguments\PluginDetails;
@@ -76,23 +75,6 @@ class MultiSafepayLibrary
             vmError($e->getMessage());
         }
         return $sdk;
-    }
-
-    /**
-     * Check if issuers are accessible because the API is available
-     *
-     * @param object $method
-     *
-     * @return bool|array
-     */
-    public function getIdealIssuers(object $method): bool|array
-    {
-        try {
-            $sdk = $this->getSdkObject($method);
-            return $sdk->getIssuerManager()->getIssuersByGatewayCode('IDEAL');
-        } catch (ApiException | ClientExceptionInterface) {
-            return false;
-        }
     }
 
     /**
@@ -280,15 +262,8 @@ class MultiSafepayLibrary
         $gateway_info = null;
         $transaction_type = 'redirect';
 
-        // If VMuikit X is not installed, we can get the related bank id, enabling the transaction type as direct as well
-        if (((string)$method->multisafepay_gateway === 'IDEAL') && !JComponentHelper::getComponent('com_vmuikitx', true)->enabled) {
-            $issuer = (string)$this->getSelectedIssuerBank($order['details']['BT']->virtuemart_paymentmethod_id) ?: '';
-            if (!empty($issuer)) {
-                $gateway_info = (new Issuer())->addIssuerId($issuer);
-                if ($gateway_info) {
-                    $transaction_type = 'direct';
-                }
-            }
+        if ((string)$method->multisafepay_gateway === 'IDEAL') {
+            $transaction_type = 'direct';
         }
         return [$gateway_info, $transaction_type];
     }
@@ -905,64 +880,6 @@ class MultiSafepayLibrary
             }
         }
         return false;
-    }
-
-    /**
-     * @param $paymentmethod_id
-     *
-     * @return ?string
-     * @throws Exception
-     * @since 4.0
-     */
-    public function getSelectedIssuerBank($paymentmethod_id): ?string
-    {
-        $session_params = $this->getMultiSafepayIdealFromSession();
-        if (!empty($session_params)) {
-            $var = 'multisafepay_ideal_bank_selected_' . $paymentmethod_id;
-            return $session_params->$var;
-        }
-        return null;
-    }
-
-    /**
-     * @param array $data
-     *
-     * @throws Exception
-     * @since version
-     */
-    public function setMultiSafepayIdealIntoSession(array $data): void
-    {
-        $app = JFactory::getApplication();
-        if (!is_null($app)) {
-            try {
-                $app->getSession()->set('MultiSafepayIdeal', json_encode($data, JSON_THROW_ON_ERROR), 'vm');
-            } catch (Exception $e) {
-                JLog::add($e->getMessage(), JLog::ERROR, 'com_virtuemart');
-            }
-        }
-    }
-
-    /**
-     * @return mixed
-     * @throws Exception
-     * @since 4.0
-     */
-    public function getMultiSafepayIdealFromSession(): mixed
-    {
-        $app = JFactory::getApplication();
-        if (!is_null($app)) {
-            $data = $app->getSession()->get('MultiSafepayIdeal', 0, 'vm');
-        }
-        if (empty($data)) {
-            return null;
-        }
-
-        try {
-            return json_decode($data, false, 512, JSON_THROW_ON_ERROR);
-        } catch (Exception $e) {
-            JLog::add($e->getMessage(), JLog::ERROR, 'com_virtuemart');
-        }
-        return null;
     }
 
     /**
