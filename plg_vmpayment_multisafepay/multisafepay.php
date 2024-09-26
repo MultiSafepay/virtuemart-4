@@ -40,7 +40,7 @@ require_once(__DIR__ . DS . 'multisafepay' .  DS . 'library' . DS . 'multisafepa
 
 class plgVmPaymentMultisafepay extends vmPSPlugin
 {
-    public const MSP_VERSION = '2.0.2';
+    public const MSP_VERSION = '2.1.0';
     public array $tableFields;
     private MultiSafepayLibrary $multisafepay_library;
 

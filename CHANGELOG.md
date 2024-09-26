@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ***
 
+## 2.1.0
+Release date: Sep, 26th 2024
+
+### Fixed
++ PLGVIR4-56: Fix order status not updated to 'refunded' after a successful refund in MCP
+
+### Removed
++ PLGVIR4-57: Remove issuers from iDEAL
++ PLGVIR4-55: Remove unused template
+
+***
+
 ## 2.0.2
 Release date: May, 14th 2024
 
