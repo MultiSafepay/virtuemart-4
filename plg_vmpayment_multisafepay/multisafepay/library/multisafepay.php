@@ -51,6 +51,8 @@ use Psr\Http\Client\ClientExceptionInterface;
 
 class MultiSafepayLibrary
 {
+    public const DIRECT_PAYMENTS = ['BIZUM', 'IDEAL'];
+
     /**
      * Returns a Sdk object
      *
@@ -262,7 +264,7 @@ class MultiSafepayLibrary
         $gateway_info = null;
         $transaction_type = 'redirect';
 
-        if ((string)$method->multisafepay_gateway === 'IDEAL') {
+        if (in_array((string)$method->multisafepay_gateway, self::DIRECT_PAYMENTS, true)) {
             $transaction_type = 'direct';
         }
         return [$gateway_info, $transaction_type];
