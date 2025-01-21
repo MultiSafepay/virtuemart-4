@@ -18,6 +18,7 @@
     </files>
     <languages folder="language">
         <language tag="en-GB">en-GB/en-GB.plg_vmpayment_multisafepay.ini</language>
+        <language tag="en-GB">en-GB/en-GB.plg_vmpayment_multisafepay.sys.ini</language>
     </languages>
     <config>
         <fields name="params">
