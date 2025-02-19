@@ -94,7 +94,7 @@ class MultiSafepayLibrary
     {
         $db_values = [];
         $db_values['virtuemart_order_id'] = $order['details']['BT']->virtuemart_order_id;
-        $db_values['order_number'] = $order['details']['BT']->order_number;
+        $db_values['order_number'] = $this->params->get('order_prefix', '').$order['details']['BT']->order_number;
         $db_values['virtuemart_paymentmethod_id'] = $cart->virtuemart_paymentmethod_id;
         $db_values['payment_name'] = $payment_name;
         $db_values['payment_order_total'] = $total_payment;
@@ -212,13 +212,16 @@ class MultiSafepayLibrary
     public function createPluginDetails(string $version): PluginDetails
     {
         return (new PluginDetails())
-            ->addApplicationName('Virtuemart ' . VM_VERSION)
+            ->addApplicationName('Virtuemart ' . VM_VERSION.' by RuposTel.com')
             ->addApplicationVersion((string)VM_VERSION)
             ->addPluginVersion($version)
             ->addPartner('')
             ->addShopRootUrl(JURI::root());
     }
-
+	var $params; 
+	public function setParams($params) {
+		$this->params = $params; 
+	}
     /**
      * Returns a PaymentOptions object used to build the order request object
      *
@@ -233,13 +236,16 @@ class MultiSafepayLibrary
         $response_received = 'pluginResponseReceived';
         $payment_cancelled = 'pluginUserPaymentCancel';
 
-        $order_number = $order['details']['BT']->order_number;
+        $order_number = $this->params->get('order_prefix', '').$order['details']['BT']->order_number;
         $payment_id = $order['details']['BT']->virtuemart_paymentmethod_id;
-        $base_url = JURI::root() . 'index.php?' . $plugin_response;
+        $root = JURI::root();
+		//stAn - when running in a directory:
+		if (substr($root, -1) !== '/') $root .= '/'; 
+		$base_url =  $root . 'index.php?' . $plugin_response;
 
-        $notification_url = JROUTE::_($base_url . $response_received . '&on=' . $order_number . '&pm=' . $payment_id . '&type=initial');
-        $redirect_url = JROUTE::_($base_url . $response_received . '&on=' . $order_number . '&pm=' . $payment_id . '&type=redirect');
-        $cancel_url = JROUTE::_($base_url . $payment_cancelled . '&on=' . $order_number . '&pm=' . $payment_id);
+        $notification_url = JRoute::link('site', $base_url . $response_received . '&on=' . $order_number . '&pm=' . $payment_id . '&type=initial');
+        $redirect_url = JRoute::link('site', $base_url . $response_received . '&on=' . $order_number . '&pm=' . $payment_id . '&type=redirect');
+        $cancel_url = JRoute::link('site', $base_url . $payment_cancelled . '&on=' . $order_number . '&pm=' . $payment_id);
 
         return (new PaymentOptions())
             ->addNotificationUrl($notification_url ?? '')
@@ -797,7 +803,7 @@ class MultiSafepayLibrary
      */
     public function getIpAddress(): string
     {
-        $ip_address = JFactory::getApplication()->input->server->get('REMOTE_ADDR', '');
+        $ip_address = JFactory::getApplication()->input->server->get('REMOTE_ADDR', '', 'RAW');
         if (empty($ip_address)) {
             $ip_address = filter_var($_SERVER['REMOTE_ADDR'], FILTER_VALIDATE_IP);
         }
@@ -851,13 +857,10 @@ class MultiSafepayLibrary
         if ($order_details->virtuemart_user_id) {
             $user_identity = (string)$order_details->virtuemart_user_id;
         }
-
+		
         if (empty($user_identity)) {
-            if (!is_null($app)) {
-                $user_identity = (string)$app->getIdentity()->get('id');
-            } else {
-                $user_identity = (string)JFactory::getUser()->id;
-            }
+			$user_identity = (string)JFactory::getUser()->get('id', 0);
+           
         }
         return $user_identity;
     }
@@ -892,11 +895,7 @@ class MultiSafepayLibrary
      */
     public function getLanguageObject(object $app = null): Language
     {
-        if (!is_null($app)) {
-            $language = $app->getLanguage();
-        } else {
-            $language = JFactory::getLanguage();
-        }
+        $language = JFactory::getLanguage();
         return $language;
     }
 }
