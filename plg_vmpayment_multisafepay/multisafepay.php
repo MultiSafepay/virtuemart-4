@@ -1,4 +1,4 @@
-<?php declare(strict_types=1);
+<?php 
 
 /**
  * DISCLAIMER
@@ -20,6 +20,7 @@
  */
 
 use Joomla\CMS\Application\CMSApplication;
+
 use MultiSafepay\Api\Transactions\TransactionResponse;
 use MultiSafepay\Util\Notification;
 use Psr\Http\Client\ClientExceptionInterface;
@@ -40,9 +41,11 @@ require_once(__DIR__ . DS . 'multisafepay' .  DS . 'library' . DS . 'multisafepa
 
 class plgVmPaymentMultisafepay extends vmPSPlugin
 {
-    public const MSP_VERSION = '2.1.0';
-    public array $tableFields;
-    private MultiSafepayLibrary $multisafepay_library;
+    public const MSP_VERSION = '2.0.1';
+    /* stAn - this should not be defined here as php8.4+ compat should be provided by vmplugin.php in VM core:
+	public $tableFields;
+    */
+	private MultiSafepayLibrary $multisafepay_library;
 
     /**
      * @param $subject
@@ -51,9 +54,12 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      */
     public function __construct(&$subject, $config)
     {
+		
         parent::__construct($subject, $config);
+       //$this->multisafepay_library = new MultiSafepayLibrary($this->params);
         $this->multisafepay_library = new MultiSafepayLibrary();
-        $this->_loggable = true;
+		$this->multisafepay_library->setParams($this->params); 
+		$this->_loggable = true;
         $this->tableFields = array_keys($this->getTableSQLFields());
         $this->setConfigParameterable($this->_configTableFieldName, $this->getVarsToPush());
     }
@@ -62,7 +68,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @return string
      * @since 4.0
      */
-    protected function getVmPluginCreateTableSQL(): string
+    protected function getVmPluginCreateTableSQL()
     {
         return $this->createTableSQL('Payment MultiSafepay Table');
     }
@@ -71,7 +77,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @return array
      * @since 4.0
      */
-    public function getTableSQLFields(): array
+    public function getTableSQLFields()
     {
         return [
             'id' => 'int(10) UNSIGNED NOT NULL AUTO_INCREMENT',
@@ -98,8 +104,9 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @throws ClientExceptionInterface
      * @since 4.0
      */
-    public function plgVmConfirmedOrder($cart, $order): ?bool
+    public function plgVmConfirmedOrder($cart, $order)
     {
+		
         $method = false;
         if ($order['details']['BT']->virtuemart_paymentmethod_id) {
             $method = $this->getVmPluginMethod($order['details']['BT']->virtuemart_paymentmethod_id);
@@ -132,16 +139,20 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
         $country = ShopFunctions::getCountryByID((int)$order['details']['BT']->virtuemart_country_id, 'country_2_code');
 
         // SECTION USING THE PHP-SDK TO FILLING UP THE PARAMETERS USED BY METHOD: createOrderRequest()
-
+		
         // The unique ID of the order
-        $order_number = (string)$order['details']['BT']->order_number;
-
+        //$order_number = (string)$order['details']['BT']->order_number;
+		//stAn - adds support to order prefix
+		$order_number = (string)$order['details']['BT']->order_number;
+		$order_number_msp = $this->params->get('order_prefix', '').(string)$order_number;
+		
+		try {
         // Total amount of money (object)
         $amount = $this->multisafepay_library->createMoneyAmount($total_payment, $currency_code_3);
-
+		
         // Two CustomerDetails (objects) using just one method, because both objects can be filled up with identical or different data
         [$billing_address, $shipment_address] = $this->multisafepay_library->createCustomerAndDelivery($order, $locale, $state, $country, $app);
-
+		
         // Details about the plugin version, application name, application version, and shop url
         $plugin_details = $this->multisafepay_library->createPluginDetails(self::MSP_VERSION);
 
@@ -150,7 +161,10 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
 
         // Adding gateway information and transaction type, because the latter can change to "direct" according to the gateway. Default is "redirect"
         [$gateway_info, $transaction_type] = $this->multisafepay_library->createGatewayInfoAndTransactionType($order, $method);
-
+		
+		foreach ($order['items'] as $key => $item) {
+			$order['items'][$key]->product_quantity = (int)$order['items'][$key]->product_quantity;
+		}
         // The shopping cart items are built using: products, shipping and payment fees (if available), and finally coupons (in this order)
         $shopping_cart_items = $this->multisafepay_library->createShoppingCartItems($order, $cart, $currency_code_3);
 
@@ -158,10 +172,10 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
         if ($method->multisafepay_days_active) {
             $days_active = (int)$method->multisafepay_days_active;
         }
-
+		
         // Finally the order request is created and filled up with all the previously created parameters
         $order_request = $this->multisafepay_library->createOrderRequest(
-            $order_number,
+            $order_number_msp,
             $amount,
             $method,
             $billing_address,
@@ -173,22 +187,34 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             $shopping_cart_items,
             $days_active
         );
-
+		}
+		catch(Exception $e) {
+			JLog::add($e->getMessage(), JLog::ERROR, 'com_virtuemart');
+			$html = JText::_('VMPAYMENT_MULTISAFEPAY_GENERIC_ERROR');
+			if (class_exists('OPCErrors')) {
+				OPCErrors::store('MSP Error', array($e->getMessage(), $order_request)); 
+			}
+			$app->enqueueMessage($html,'error');
+			return false;  
+		}
         // MultiSafepay SDK is loaded and the transaction is created using the order request
-        try {
+        $payment_url = ''; 
+		try {
             $sdk = $this->multisafepay_library->getSdkObject($method);
             $transaction_manager = $sdk->getTransactionManager()->create($order_request);
             $payment_url = $transaction_manager->getPaymentUrl();
         } catch (Exception $e) {
             JLog::add($e->getMessage(), JLog::ERROR, 'com_virtuemart');
 
-            $html = 'There was a problem processing your payment. Please try again later or contact with us.';
-            $app = JFactory::getApplication();
-            if (!is_null($app)) {
-                $app->enqueueMessage(vmText::_($html));
-            } else {
-                vmError(vmText::sprintf($html));
-            }
+            $html = JText::_('VMPAYMENT_MULTISAFEPAY_GENERIC_ERROR'); 
+            
+            $app->enqueueMessage(vmText::_($html), 'error');
+			
+			if (class_exists('OPCErrors')) {
+				OPCErrors::store('MSP Error', array($e->getMessage(), $order_request)); 
+			}
+			
+			return false; 
         }
 
         // URL to redirect the customer is gotten from the transaction manager of the SDK
@@ -197,12 +223,22 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             $model_order = VmModel::getModel('orders');
 
             // User is notified about the order status change
-            $order['customer_notified'] = 1;
+           
+			$order['order_status'] = $this->params->get('status_initialized', 'P');
+			$order['customer_notified'] = 1;
             $order['comments'] = '';
-
+			$order['virtuemart_order_id'] = (int)$order['details']['BT']->virtuemart_order_id; 
+			//stAn - do not send email for P status if already done:
+			if (!$this->isOrderAlreadyUpdated($order['virtuemart_order_id'], $order['order_status'])) 
+			{
+			if (class_exists('OPCErrors')) {
+				
+				OPCErrors::store('MSP Order Status Update', array('order_number_msp'=>$order_number,'to_status'=>$order['order_status'], 'from_status'=>$order['details']['BT']->order_status)); 
+			}
+			
             // Updating the order status
-            $model_order->updateStatusForOneOrder($order['details']['BT']->virtuemart_order_id, $order, true);
-
+            $model_order->updateStatusForOneOrder((int)$order['details']['BT']->virtuemart_order_id, $order, true);
+			}
             // FORCED TWO STATUS:
             // 1) Do not delete the cart because is not confirmed the order yet.
             // 2) Order data is not validated yet. Validation is using a cart hash.
@@ -210,17 +246,13 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             $cart->_dataValidated = false;
             // Recording the cart data into the session
             $cart->setCartIntoSession();
-
+			
             // Now customer can be redirected to the payment page
-            if (($app instanceof CMSApplication)) {
-                $app->redirect($url, 301);
-                $app->close();
-            }
-        } elseif (($app instanceof CMSApplication)) {
-            $app->redirect(JURI::root() . 'index.php?option=com_virtuemart&view=cart&api=1', 301);
+            $app->redirect($url, 301);
             $app->close();
+			return true; 
         }
-        exit();
+        return false; 
     }
 
     /**
@@ -260,7 +292,8 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             echo 'Process Feed';
             exit;
         }
-
+		
+		$status = ''; 
         $method = false;
         $virtuemart_paymentmethod_id = vRequest::getInt('pm');
         if ($virtuemart_paymentmethod_id) {
@@ -270,7 +303,13 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             return null;
         }
 
-        $order_number = vRequest::getString('on', 0);
+        $order_number_msp = vRequest::getString('on', 0);
+		$order_number = $order_number_msp; 
+		$prefix = $this->params->get('order_prefix', ''); 
+		if (!empty($prefix)) {
+			//provide support for MSP order prefix
+			$order_number = substr($order_number, strlen($prefix)); 
+		}
         if (
             !$method->multisafepay_api_key ||
             empty($order_number) ||
@@ -278,17 +317,35 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
         ) {
             return null;
         }
-
+		if (file_exists(JPATH_ROOT.DIRECTORY_SEPARATOR.'components'.DIRECTORY_SEPARATOR.'com_onepage'.DIRECTORY_SEPARATOR.'helpers'.DIRECTORY_SEPARATOR.'errors.php')) {
+			require_once(JPATH_ROOT.DIRECTORY_SEPARATOR.'components'.DIRECTORY_SEPARATOR.'com_onepage'.DIRECTORY_SEPARATOR.'helpers'.DIRECTORY_SEPARATOR.'errors.php'); 
+		}
         $model_order = VmModel::getModel('orders');
         $order_id = VirtueMartModelOrders::getOrderIdByOrderNumber($order_number);
-        $order_object = $model_order->getOrder($order_id);
+        $order_id = (int)$order_id; 
+		
+		if (empty($order_id)) {
+			$validation_failed = true;
+		}
+		else {
+		
+		
+		$order_object = $model_order->getOrder($order_id);
 
         // Verification of the notification sent by MultiSafepay
         $validation_failed = false;
         $body = file_get_contents('php://input');
+		if (!empty($body)) 
         if ($_SERVER['HTTP_AUTH'] && !Notification::verifyNotification($body, $_SERVER['HTTP_AUTH'], $method->multisafepay_api_key)) {
             $validation_failed = true;
-        }
+			JLog::add('MSP: Order not found: '.$order_number_msp, JLog::ERROR, 'com_virtuemart');
+			
+			if (class_exists('OPCErrors')) {
+				OPCErrors::store('MSP Error Order not found', array($body)); 
+			}
+			
+		}
+		}
 
         try {
             /** @var TransactionResponse $transaction */
@@ -296,140 +353,252 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
                 $transaction = $this->multisafepay_library->getTransactionFromNotification($body);
             } else {
                 $sdk = $this->multisafepay_library->getSdkObject($method);
-                $transaction = $sdk->getTransactionManager()->get($order_number);
+				//stAn - check with prefixed order number
+                $transaction = $sdk->getTransactionManager()->get($order_number_msp);
             }
             $status = $transaction->getStatus();
             $multisafepay_transaction_id = $transaction->getTransactionId();
         } catch (Exception $e) {
             JLog::add($e->getMessage(), JLog::ERROR, 'com_virtuemart');
 
-            $html = 'Error getting the transaction. Please contact the administrator. Thanks.';
-            vmError(vmText::sprintf($html));
+            if (class_exists('OPCErrors')) {
+				OPCErrors::store('MSP Error Order not found', array($e->getMessage(), $order_number_msp)); 
+			}
+			$html = JText::_('VMPAYMENT_MULTISAFEPAY_GENERIC_ERROR'); 
+            vmError($html);
             vRequest::setVar('html', $html);
             echo $html;
             exit();
         }
-
+		
+		if (class_exists('OPCErrors')) {
+				$rawData = $transaction->getRawData(); 
+				OPCErrors::store('MSP IPN Received', array('order_number_msp'=>$order_number_msp,'status'=>$status,  'transaction'=>$rawData, 'virtuemart_paymentmethod_id'=>$virtuemart_paymentmethod_id, 'body'=>$body)); 
+			}
+		
+		if (!$validation_failed)
+		{
         if ($multisafepay_transaction_id) {
-            $db = JFactory::getContainer()->get('DatabaseDriver');
+			
+            $db = JFactory::getDBO();
             if (!is_null($db)) {
                 $query = 'UPDATE `#__virtuemart_payment_plg_multisafepay` SET `multisafepay_transaction_id` = "' . (int)$multisafepay_transaction_id . '" WHERE `virtuemart_order_id` = "' . (int)$order_id . '"';
                 $db->setQuery($query);
                 $db->execute();
             }
         }
-
+		}
+		//for thank you page
         $details = [
             'status' => $status,
-            'transactionid' => $order_number
+            'transactionid' => $order_number_msp
         ];
-
+		
+		
+		
         $order = [];
         $vm_status = '';
         switch ($status) {
             case 'initialized':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_INITIALIZED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
-                $order['order_status'] = $method->status_initialized;
-                $vm_status = 'P';
+                
+                $order['order_status'] = $this->params->get('status_initialized', 'P');
+                $vm_status = $order['order_status'];
                 break;
             case 'completed':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_COMPLETED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
-                $order['order_status'] = $method->status_completed;
-                $vm_status = 'C';
+                
+                $order['order_status'] = $this->params->get('status_completed', '');
+                $vm_status = $order['order_status'];
+				
+				$transaction_currency = $transaction->getCurrency();
+				$transaction_amount = $transaction->getAmount();	
+				$transaction_amount_refunded = $transaction->getAmountRefunded(); 
+				$order['paid'] = $transaction_amount / 100; 
+				$date = new JDate($transaction->getModified()); 
+				$order['paid_on'] = $date->toSql();
+				
                 break;
             case 'cancelled':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_CANCELED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
-                $order['order_status'] = $method->status_canceled;
-                $vm_status = 'X';
+               
+                $order['order_status'] = $this->params->get('status_canceled', '');
+                $vm_status = $order['order_status'];
                 break;
             case 'expired':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_EXPIRED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
-                $order['order_status'] = $method->status_expired;
-                $vm_status = 'X';
+                
+                $order['order_status'] = $this->params->get('status_expired', '');
+                
+				$vm_status = $order['order_status'];
                 break;
             case 'void':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_VOID'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
-                $order['order_status'] = $method->status_void;
-                $vm_status = 'D';
+                
+                $order['order_status'] = $this->params->get('status_void', '');
+                $vm_status = $order['order_status'];
                 break;
             case 'declined':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_DECLINED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
-                $order['order_status'] = $method->status_declined;
-                $vm_status = 'D';
+                
+                $order['order_status'] = $this->params->get('status_declined', '');
+                $vm_status = $order['order_status'];
                 break;
+			case 'partial_refunded':
+				 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_REFUNDED'));
+                 
+				 $transaction_amount = $transaction->getAmount();	
+				 $transaction_amount_refunded = $transaction->getAmountRefunded(); 
+				 $order['paid'] = ($transaction_amount / 100) - ($transaction_amount_refunded / 100); 
+                 $order['order_status'] = $this->params->get('status_refunded', '');
+                 $vm_status = $order['order_status'];
+                 break;
             case 'refunded':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_REFUNDED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
-                $order['order_status'] = $method->status_refunded;
-                $vm_status = 'R';
-                break;
+                 
+				 $transaction_amount = $transaction->getAmount();	
+				 $transaction_amount_refunded = $transaction->getAmountRefunded(); 
+				 $order['paid'] = ($transaction_amount / 100) - ($transaction_amount_refunded / 100); 
+                 $order['order_status'] = $this->params->get('status_refunded', '');
+                 $vm_status = $order['order_status'];
+                 break;
             case 'uncleared':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_UNCLEARED_MSG_UNCLEARED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
-                $order['order_status'] = $method->status_uncleared;
-                $vm_status = 'X';
+                
+                $order['order_status'] = $this->params->get('status_uncleared', '');
+                $vm_status = $order['order_status'];
                 break;
             case 'shipped':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_SHIPPED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
-                $order['order_status'] = $method->status_shipped;
-                $vm_status = 'S';
+                
+                $order['order_status'] = $this->params->get('status_shipped', '');
+                $vm_status = $order['order_status'];
                 break;
         }
-
+		
+		if (!empty($order)) {
+		
+		
+		
+		//if at least one known status was detected from msp, product html for customer
+			
+		$payment_name = $this->renderPluginName($method); 
+		if (empty($payment_name)) {
+			//payment method is unpblished or was removed
+			$db = JFactory::getDBO();
+			$db->setQuery('SELECT * FROM `' . $this->_tablename . '` WHERE `virtuemart_order_id` = "' . $virtuemart_order_id . '" order by `id` desc limit 1');
+            $payment_table = $db->loadObject();
+			if (!empty($payment_table)) {
+				$payment_name = $payment_table->payment_name; 
+			}
+		}
+		$html = $this->getPaymentResponseHtml($details, $payment_name , $method, $order_object, $order);
+		
+		$order['order_status'] = $vm_status; 
+		if (empty($body)) {
+			$is_customer_context = true; 
+		}
+		else {
+			$is_customer_context = false; 
+		}
+		if ((!empty($this->params->get('status_do_nothing', '')) || (empty($vm_status)))) 
+		{
+			$status_do_nothing = $this->params->get('status_do_nothing', ''); 
+			if (empty($vm_status) || ($vm_status === $status_do_nothing)) {
+				if (!$is_customer_context) {
+					echo 'OK, do nothing'; 
+					JFactory::getApplication()->close(); 
+				}
+				else {
+					 return $html;
+				}
+			}
+		}
         // Notifying MultiSafepay: Invoiced
-        $orders_with_invoice = VmConfig::get('inv_os', ['C']);
-        if (!is_array($orders_with_invoice)) {
+		//stAn - not all vendors are using ecommerce to create invoice numbers and thus this must not have any default value:
+        $orders_with_invoice = VmConfig::get('inv_os', array());
+        if (!empty($orders_with_invoice)) {
+		if (!is_array($orders_with_invoice)) {
             $orders_with_invoice = (array)$orders_with_invoice;
         }
-
+		}
+		else {
+			$orders_with_invoice = array(); 
+		}
+		//stAn - isAlreadyDone is an alias of "canProceed": 
+		//we don't want to double update statuses or change status from Shipped to Confirmed
+		
+		$isAlreadyDone = $this->isOrderAlreadyUpdated($order_id, $order['order_status'], $is_customer_context);
+		if (!$validation_failed) {
+		if(empty($isAlreadyDone)) {
+		if (isset($_GET['type']) && ($_GET['type'] === 'redirect')) {
+				//stAn - if customer is too fast, we get 2x IPN calls with the same data for an order which is not yet updated
+				sleep(5); 
+			}
+		
+		//stAn - is this really needed for status update from MSP to VM to update MSP ? 
         foreach ($orders_with_invoice as $one_order_with_invoice) {
             if ($vm_status === (string)$one_order_with_invoice) {
                 $invoice_model = VmModel::getModel('invoice');
                 $invoice_number = $invoice_model->getInvoiceNumber($order_id);
                 if ($invoice_number) {
-                    $validation_invoice = $this->multisafepay_library->changeOrderStatusTo($order_number, $method, ['invoice_id' => $invoice_number]);
-                    $log_message = 'Update Status as Invoiced for Order #' . $order_number . ' was ' . (!empty($validation_invoice) ? 'Successful' : 'Unsuccessful');
+                    $validation_invoice = $this->multisafepay_library->changeOrderStatusTo($order_number_msp, $method, ['invoice_id' => $invoice_number]);
+                    $log_message = 'Update Status as Invoiced for Order #' . $order_number_msp . ' was ' . (!empty($validation_invoice) ? 'Successful' : 'Unsuccessful');
                     (!empty($validation_invoice) ? vmInfo($log_message) : vmError($log_message));
                 }
             }
         }
-
-        if (((string)$order['order_status'] !== (string)$order_object['details']['BT']->order_status) && ((string)$order_object['details']['BT']->order_status !== 'S')) {
-            $order['virtuemart_order_id'] = $order_id;
+		
+		
+		
+		
+        
+		
+            $order['virtuemart_order_id'] = (int)$order_id;
             $order['comments'] = '';
-            if ($order['order_status'] !== $method->status_canceled) {
+            if ($order['order_status'] !== $this->params->get('status_canceled', '')) {
                 $order['customer_notified'] = 1;
             } else {
                 $order['customer_notified'] = 0;
             }
+			
+			if (class_exists('OPCErrors')) {
+				
+				OPCErrors::store('MSP Order Status Update', array('order_number_msp'=>$order_number_msp,'order_id'=>$order_id,'to_status'=>$order['order_status'], 'from_status'=>$order_object['details']['BT']->order_status)); 
+			}
+			
             $model_order->updateStatusForOneOrder($order_id, $order);
-        }
-        if ($status !== 'cancelled') {
+        
+		}
+		}
+		}
+		
+		if ($is_customer_context)
+		if (($vm_status === $this->params->get('status_completed', '')) || ($vm_status === $this->params->get('status_initialized', '')))
+        {
             $this->emptyCart();
         }
 
         // NOTE: Altering the status after all the previous actions are done
         if ($validation_failed) {
             JLog::add('Notification for Order #' . $order_number  . ' has been received but is not valid.', JLog::ERROR, 'com_virtuemart');
-
-            // We make the order status as pending, and as unpaid too
-            $order['order_status'] = 'P';
+			if (class_exists('OPCErrors')) {
+				OPCErrors::store('MSP Error validation failed', array($order_id, $order_number)); 
+			}
+           
+            /*stAn - we must not allow attacker to change order statatus of an order:
+			$order['order_status'] = 'P';
             $order['paid'] = 0;
             $model_order->updateStatusForOneOrder($order_id, $order);
+			*/
+			
         }
 
         if (isset($_GET['type']) && ((string)$_GET['type'] === 'redirect')) {
             return $html;
         }
         echo 'OK';
-        exit;
+        JFactory::getApplication()->close(); 
     }
 
     /**
@@ -439,26 +608,24 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @param mixed $htmlIn
      *
      * @return bool
+     * @throws ClientExceptionInterface
      * @throws Exception
      * @since 4.0
      */
-    public function plgVmDisplayListFEPayment(VirtueMartCart $cart, int $selected = 0, mixed &$htmlIn = []): bool
+    public function plgVmDisplayListFEPayment(VirtueMartCart $cart, int $selected = 0, mixed &$htmlIn = [])
     {
         if ((string)$this->getPluginMethods($cart->vendorId) === '0') {
-            if (empty($this->_name)) {
-                $app = JFactory::getApplication();
-                if (!is_null($app)) {
-                    $app->enqueueMessage(vmText::_('COM_VIRTUEMART_CART_NO_' . strtoupper($this->_psType)));
-                }
-            }
-            return false;
+            
+            return null;
         }
-
+		if (empty($this->methods)) return null; 
+		
         $htmla = [];
-        vmdebug('methods', $this->methods);
+        //vmdebug('methods', $this->methods);
         VmLanguage::loadJLang('com_virtuemart');
         $currency = CurrencyDisplay::getInstance();
-        foreach ($this->methods as $method) {
+		
+		foreach ($this->methods as $method) {
             if ($this->checkConditions($cart, $method, $cart->cartPrices)) {
                 $method_sales_price = $this->calculateSalesPrice($cart, $method, $cart->cartPrices);
                 $logo = $this->displayLogos($method->payment_logos);
@@ -480,6 +647,8 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
                 $htmla[(int)$method->virtuemart_paymentmethod_id] = trim($html);
             }
         }
+		
+		
 
         if (empty($htmlIn)) {
             $htmlIn = [];
@@ -507,9 +676,11 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @throws ClientExceptionInterface
      * @since 4.0
      */
-    public function plgVmOnUpdateOrderPayment(&$order, $old_order_status): ?bool
+    public function plgVmOnUpdateOrderPayment(&$order, $old_order_status)
     {
         $method = false;
+		if (!is_object($order)) return null; 
+		
         if ($order->virtuemart_paymentmethod_id) {
             $method = $this->getVmPluginMethod($order->virtuemart_paymentmethod_id);
         }
@@ -528,15 +699,23 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
         $validation = true;
         $model_order = VmModel::getModel('orders');
         $order_object = $model_order->getOrder($order->virtuemart_order_id);
-        $order_number = $order_object['details']['BT']->order_number;
-
+		$order_id = (int)$order->virtuemart_order_id;
+		
+		$order_number = false; 
+		if (!empty($order_object)) {
+			$order_number = $order_object['details']['BT']->order_number;
+		}
         if ($order_number) {
+			$order_number_msp = $this->params->get('order_prefix', '').(string)$order_number;
             // Notifying MultiSafepay: Invoiced
             $invoice_model = VmModel::getModel('invoice');
             $invoice_number = $invoice_model->getInvoiceNumber($order->virtuemart_order_id);
-            if ($invoice_number) {
+            $status_do_nothing = $this->params->get('status_do_nothing', '');
+			
+			if ($invoice_number) {
                 // Array of orders status that will be set as invoiced. Set by VM as default is C (Confirmed)
-                $orders_with_invoice = VmConfig::get('inv_os', ['C']);
+                //stAn - no default value should be used here:
+				$orders_with_invoice = VmConfig::get('inv_os', array());
                 if (!is_array($orders_with_invoice)) {
                     $orders_with_invoice = (array)$orders_with_invoice;
                 }
@@ -544,8 +723,9 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
                 foreach ($orders_with_invoice as $one_order_with_invoice) {
                     // If the "updated" order status is the same as the "ones" set in VM,
                     // then the order is set as invoiced, and sent to MultiSafepay
-                    if ((string)$order->order_status === (string)$one_order_with_invoice) {
-                        $validation_invoice = $this->multisafepay_library->changeOrderStatusTo($order_number, $method, ['invoice_id' => $invoice_number]);
+                    if (!empty($status_do_nothing) && ($status_do_nothing !== $one_order_with_invoice))
+					if ($order->order_status === $one_order_with_invoice) {
+                        $validation_invoice = $this->multisafepay_library->changeOrderStatusTo($order_number_msp, $method, ['invoice_id' => $invoice_number]);
                         $log_message = 'Update Status as Invoiced for Order #' . $order_number . ' was ' . (!empty($validation_invoice) ? 'Successful' : 'Unsuccessful');
                         (!empty($validation_invoice) ? vmInfo($log_message) : vmError($log_message));
                     }
@@ -553,14 +733,30 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             }
 
             // Notifying MultiSafepay: Order shipped
-            if (((string)$old_order_status !== 'S') && (string)$order->order_status === 'S') {
-                $validation = $this->multisafepay_library->changeOrderStatusTo($order_number, $method, [], 'shipped');
+			$shipped = $this->params->get('status_shipped', ''); 
+			
+			
+			if (!empty($status_do_nothing) && ($status_do_nothing !== $shipped))
+            if (($old_order_status !== $shipped) && ($order->order_status === $shipped)) {
+                $validation = $this->multisafepay_library->changeOrderStatusTo($order_number_msp, $method, [], 'shipped');
                 $log_message = 'Update Status as Shipped for Order #' . $order_number . ' was ' . (!empty($validation) ? 'Successful' : 'Unsuccessful');
-                (!empty($validation) ? vmInfo($log_message) : vmError($log_message));
+                JLog::add($log_message, JLog::ERROR, 'com_virtuemart');
+				if (!empty($validation)) { 
+					vmInfo($log_message);
+				}
+				else {				
+					vmError($log_message);
+				}
             }
-
+			$supress_refunds = $this->params->get('supress_refunds', 0); 
+			if (empty($supress_refunds)) {
             // Notifying MultiSafepay: Order refunded
-            if (((string)$old_order_status === 'C') && ((string)$order->order_status === 'R')) {
+			$refunded = $this->params->get('status_refunded', ''); 
+			$history = self::getOrderHistory($order_id); 
+			$confirmed = $this->params->get('status_completed', ''); 
+			
+			if (!empty($status_do_nothing) && ($status_do_nothing !== $refunded))
+            if (in_array($confirmed, $history) && ((string)$order->order_status === $refunded)) {
                 $payment_currency_id = (int)$order_object['details']['BT']->payment_currency;
 
                 if (!$payment_currency_id && is_array($payments)) {
@@ -568,7 +764,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
                     foreach ($payments as $payment) {
                         // If the order number is the same, then get the currency code from the
                         // payments array as it wasn't able to get it from the order object
-                        if ((string)$payment->order_number === (string)$order_number) {
+                        if ((int)$payment->virtuemart_order_id === (int)$order_id) {
                             $currency_code_3_prev = $payment->payment_currency;
                             break;
                         }
@@ -578,45 +774,30 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
 
                 $currency_code_3 = ShopFunctions::getCurrencyByID($payment_currency_id, 'currency_code_3');
                 $amount = $this->multisafepay_library->getMoneyObject(0.00, $currency_code_3); // Refund totally adding 0
-
-                $validation = $this->multisafepay_library->getRefundObject($order_number, $amount, $method);
+				
+                $validation = $this->multisafepay_library->getRefundObject($order_number_msp, $amount, $method);
                 $log_message = 'Refund for Order #' . $order_number . ' was ' . (!empty($validation) ? 'Successful' : 'Unsuccessful');
-                (!empty($validation) ? vmInfo($log_message) : vmError($log_message));
+                JLog::add($log_message, JLog::ERROR, 'com_virtuemart');
+				if (!empty($validation)) { 
+					vmInfo($log_message);
+				}
+				else {				
+					//vmError($log_message);
+				}
             }
+			}
         } else {
+			$log_message = 'Order number not found';
+			JLog::add($log_message, JLog::ERROR, 'com_virtuemart');
             vmWarn('Order number not found');
             return null;
         }
         return $validation;
     }
 
-    /**
-     * @param $plugin
-     * @param string $where
-     *
-     * @return string
-     *
-     * @throws Exception
-     * @since 4.0
-     */
-    protected function renderPluginName($plugin, string $where = 'checkout'): string
-    {
-        $display_logos = '';
-        $payment_param = [];
+   
 
-        $logos = $plugin->payment_logos;
-        if (!empty($logos)) {
-            $display_logos = $this->displayLogos($logos) . ' ';
-        }
-        $payment_name = $plugin->payment_name;
-        vmdebug('renderPluginName', $payment_param);
-
-        return $this->renderByLayout('render_pluginname', [
-            'logo' => $display_logos,
-            'payment_name' => $payment_name,
-            'payment_description' => $plugin->payment_desc,
-        ]);
-    }
+   
 
     /**
      * Display stored payment data for an order
@@ -633,9 +814,12 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             return null; // Another method was selected, do nothing
         }
 
-        $db = JFactory::getContainer()->get('DatabaseDriver');
-        if (!is_null($db)) {
-            $db->setQuery('SELECT * FROM `' . $this->_tablename . '` WHERE `virtuemart_order_id` = "' . $virtuemart_order_id . '"');
+        
+        
+		$db = JFactory::getDBO();
+		
+		if (!is_null($db)) {
+            $db->setQuery('SELECT * FROM `' . $this->_tablename . '` WHERE `virtuemart_order_id` = "' . $virtuemart_order_id . '" order by `id` desc limit 1');
             $payment_table = $db->loadObject();
             if (!$payment_table) {
                 return '';
@@ -644,12 +828,15 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
 
         self::getPaymentCurrency($payment_table);
 
-        $currency_code_3 = '';
-        if (!is_null($db)) {
+        $currency_code_3 = $payment_table->payment_currency;
+        /*
+		stAn - payment_currency is already in ISO format per createDatabaseValues
+		if (!is_null($db)) {
             $db->setQuery('SELECT `currency_code_3` FROM `#__virtuemart_currencies` WHERE `virtuemart_currency_id` = "' . $payment_table->payment_currency . '"');
             $currency_code_3 = $db->loadResult();
         }
-
+		*/
+		
         $html = '<table class="adminlist">' . "\n";
         $html .= $this->getHtmlHeaderBE();
         $html .= $this->getHtmlRowBE('MULTISAFEPAY_PAYMENT_NAME', $payment_table->payment_name);
@@ -665,14 +852,11 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @return string
      * @since 4.0
      */
-    public function getPaymentResponseHtml($data, $payment_name): string
+    public function getPaymentResponseHtml($data, $payment_name, $currentMethod, $order, $new_order): string
     {
-        $html = '<table style="margin-top:10px;">' . "\n";
-        $html .= $this->getHtmlRow('MULTISAFEPAY_PAYMENT_NAME', $payment_name, 'style="padding:8px;"');
-        $html .= $this->getHtmlRow('MULTISAFEPAY_STATUS', $data['status'], 'style="padding:8px;"');
-        $html .= $this->getHtmlRow('MULTISAFEPAY_PAYMENT_TRANSACTIONID', $data['transactionid'], 'style="padding:8px;"');
-        $html .= '</table>' . "\n";
-
+		//stAn, this provides an override for custom thank you page
+		
+		$html = $this->renderByLayout('thankyou', array('payment' => $currentMethod, 'data'=>$data, 'order'=>$order, 'new_order'=>$new_order, 'ref'=>$this, 'payment_name'=>$payment_name));
         return $html;
     }
 
@@ -794,7 +978,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @throws Exception
      * @since 4.0
      */
-    public function plgVmOnSelectCheckPayment(VirtueMartCart $cart, &$msg): ?bool
+    public function plgVmOnSelectCheckPayment(VirtueMartCart $cart, &$msg)
     {
         if (!$this->selectedThisByMethodId($cart->virtuemart_paymentmethod_id)) {
             return null;
@@ -808,6 +992,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             return null;
         }
 
+        
         return true;
     }
 
@@ -823,7 +1008,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @return ?bool if the method was not selected, false if the shipping rate is not valid anymore, true otherwise
      * @since 4.0
      */
-    public function plgVmOnSelectedCalculatePricePayment(VirtueMartCart $cart, array &$cart_prices, &$cart_prices_name): ?bool
+    public function plgVmOnSelectedCalculatePricePayment(VirtueMartCart $cart, array &$cart_prices, &$cart_prices_name)
     {
         return $this->onSelectedCalculatePrice($cart, $cart_prices, $cart_prices_name);
     }
@@ -838,7 +1023,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @return ?array
      * @since 4.0
      */
-    public function plgVmOnCheckAutomaticSelectedPayment(VirtueMartCart $cart, array $cart_prices = []): ?array
+    public function plgVmOnCheckAutomaticSelectedPayment(VirtueMartCart $cart, array $cart_prices = [])
     {
         return $this->onCheckAutomaticSelected($cart, $cart_prices);
     }
@@ -853,7 +1038,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @return void Null for methods that aren't active, text (HTML) otherwise
      * @since 4.0
      */
-    public function plgVmOnShowOrderFEPayment($virtuemart_order_id, $virtuemart_paymentmethod_id, &$payment_name): void
+    public function plgVmOnShowOrderFEPayment($virtuemart_order_id, $virtuemart_paymentmethod_id, &$payment_name)
     {
         $this->onShowOrderFE($virtuemart_order_id, $virtuemart_paymentmethod_id, $payment_name);
     }
@@ -866,7 +1051,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @throws Exception
      * @since 4.0
      */
-    public function plgVmOnCheckoutCheckDataPayment(VirtueMartCart $cart): ?bool
+    public function plgVmOnCheckoutCheckDataPayment(VirtueMartCart $cart)
     {
         if (!$this->selectedThisByMethodId($cart->virtuemart_paymentmethod_id)) {
             return null;
@@ -880,6 +1065,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             return null;
         }
 
+        
         return true;
     }
 
@@ -892,7 +1078,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @return mixed Null when for payment methods that were not selected, text (HTML) otherwise
      * @since 4.0
      */
-    public function plgVmOnShowOrderPrintPayment($order_number, int $method_id): mixed
+    public function plgVmOnShowOrderPrintPayment($order_number, int $method_id)
     {
         return $this->onShowOrderPrint($order_number, $method_id);
     }
@@ -904,7 +1090,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @return bool
      * @since 4.0
      */
-    public function plgVmSetOnTablePluginParamsPayment($name, $id, &$table): bool
+    public function plgVmSetOnTablePluginParamsPayment($name, $id, &$table)
     {
         return $this->setOnTablePluginParams($name, $id, $table);
     }
@@ -914,8 +1100,78 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
      * @return bool
      * @since 4.0
      */
-    public function plgVmDeclarePluginParamsPaymentVM3(&$data): bool
+    public function plgVmDeclarePluginParamsPaymentVM3(&$data)
     {
         return $this->declarePluginParams('payment', $data);
     }
+	
+	private function isOrderAlreadyUpdated($order_id, $toUpdateStatus, $is_customer_context=true) {
+		
+		$history = self::getOrderHistory($order_id); 
+		$last = end($history); 
+		//last one is same as current 
+		if ($last === $toUpdateStatus) return true; 
+		
+		//no update is possible for Do Nothing
+		$status_do_nothing = $this->params->get('status_do_nothing', ''); 
+		if ($toUpdateStatus === $status_do_nothing) return true; 
+		
+		$locking_status = $this->params->get('locking_status', array()); 
+		$locking_status_exceptions = $this->params->get('locking_status_exceptions', array());
+		//current status is in locking exceptions, such as refunded or partial refunded:
+		//we dont update order in customer context even for exceptions:
+		if (!$is_customer_context)
+		if (!empty($locking_status_exceptions) && (is_array($locking_status_exceptions))) {
+			if (in_array($toUpdateStatus, $locking_status_exceptions)) {
+				return false; 
+			}
+		}
+		//we found locking status in history, no update is possible - such as shipped (to confirmed)
+		if (!empty($locking_status)) {
+			if (!is_array($locking_status)) $locking_status = array($locking_status); 
+			foreach ($locking_status as $lc) {
+				if (in_array($lc, $history)) {
+					return true; 
+				}
+			}
+		}
+		
+		return false; 
+	
+		
+	}
+	
+	private static function getOrderHistory($order_id, $after_status='') {
+		$db = JFactory::getDBO(); 
+		$q = 'select h.order_status_code from #__virtuemart_order_histories as h '; 
+		
+		$q .= ' where h.virtuemart_order_id = '.(int)$order_id.' '; 
+		
+		$q .= ' order by h.virtuemart_order_history_id asc'; 
+		
+		
+		
+		$db->setQuery($q); 
+		$res = $db->loadAssocList(); 
+		$ret = array(); 
+		if (!empty($res)) {
+			foreach ($res as $row) { 
+			$ret[] = $row['order_status_code']; 
+			if ($row['order_status_code'] === $after_status) $ret = array(); 
+			}
+		}
+		
+		$q = 'select order_status from #__virtuemart_orders where virtuemart_order_id = '.(int)$order_id; 
+		$db->setQuery($q); 
+		$last_order_head_status = $db->loadResult(); 
+		if (!empty($last_order_head_status)) {
+		$last = end($ret); 
+		if ($last !== $last_order_head_status) {
+			$ret[] = $last_order_head_status; 
+		}
+		}
+		
+		return $ret; 
+	}
+	
 }
