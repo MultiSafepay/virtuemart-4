@@ -791,22 +791,49 @@ class MultiSafepayLibrary
     }
 
     /**
-     * Get the IP address of the client
+     * Get the IP address of the client with proper IPv6 support
+     * and handling for comma-separated proxy-forwarded IPs
      *
      * @return string
-     * @throws Exception
      * @since 4.0
      */
     public function getIpAddress(): string
     {
-        $ip_address = JFactory::getApplication()->input->server->get('REMOTE_ADDR', '');
-        if (empty($ip_address)) {
-            $ip_address = filter_var($_SERVER['REMOTE_ADDR'], FILTER_VALIDATE_IP);
+        // Try different IP sources in order of reliability
+        $ip_sources = [
+            'HTTP_CLIENT_IP',
+            'HTTP_X_FORWARDED_FOR',
+            'REMOTE_ADDR'
+        ];
+
+        $ip_address = '';
+
+        foreach ($ip_sources as $source) {
+            if (!empty($_SERVER[$source])) {
+                // Handle potential comma-separated IP lists
+                $ip_list = explode(',', $_SERVER[$source]);
+
+                foreach ($ip_list as $ip) {
+                    $candidate_ip = trim($ip);
+                    if (!empty($candidate_ip)) {
+                        $filtered_ip = filter_var($candidate_ip, FILTER_VALIDATE_IP);
+                        if ($filtered_ip !== false) {
+                            $ip_address = $filtered_ip;
+                            break 2;
+                        }
+                    }
+                }
+            }
         }
 
-        if ((string)$ip_address === '1') {
+        if (((string)$ip_address === '1') || ($ip_address === '::1')) {
+            $ip_address = '127.0.0.1'; // Normalize localhost representations
+        }
+
+        if (empty($ip_address)) {
             $ip_address = '127.0.0.1';
         }
+
         return $ip_address;
     }
 
