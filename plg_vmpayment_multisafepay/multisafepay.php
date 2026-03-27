@@ -284,10 +284,15 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
         $order_object = $model_order->getOrder($order_id);
 
         // Verification of the notification sent by MultiSafepay
-        $validation_failed = false;
         $body = file_get_contents('php://input');
-        if ($_SERVER['HTTP_AUTH'] && !Notification::verifyNotification($body, $_SERVER['HTTP_AUTH'], $method->multisafepay_api_key)) {
-            $validation_failed = true;
+        $authorization_header = isset($_SERVER['HTTP_AUTH']) ? trim((string)$_SERVER['HTTP_AUTH']) : '';
+        if ($body && (empty($authorization_header) || !Notification::verifyNotification($body, $authorization_header, $method->multisafepay_api_key))) {
+            JLog::add('Notification for Order #' . $order_number  . ' has been received but is not valid.', JLog::ERROR, 'com_virtuemart');
+
+            // HTTP/1.1 401 Unauthorized
+            http_response_code(401);
+            echo 'Unauthorized';
+            exit();
         }
 
         try {
@@ -310,10 +315,17 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             exit();
         }
 
+        $combined_payment_name = $this->getWalletCombinedPaymentName($method, $transaction);
+
         if ($multisafepay_transaction_id) {
             $db = JFactory::getContainer()->get('DatabaseDriver');
             if (!is_null($db)) {
-                $query = 'UPDATE `#__virtuemart_payment_plg_multisafepay` SET `multisafepay_transaction_id` = "' . (int)$multisafepay_transaction_id . '" WHERE `virtuemart_order_id` = "' . (int)$order_id . '"';
+                $query = 'UPDATE `#__virtuemart_payment_plg_multisafepay` SET `multisafepay_transaction_id` = "' . (int)$multisafepay_transaction_id . '"';
+                if (!is_null($combined_payment_name)) {
+                    $query .= ', `payment_name` = ' . $db->quote($combined_payment_name);
+                }
+                $query .= ' WHERE `virtuemart_order_id` = "' . (int)$order_id . '"';
+
                 $db->setQuery($query);
                 $db->execute();
             }
@@ -323,61 +335,62 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             'status' => $status,
             'transactionid' => $order_number
         ];
+        $payment_name = $this->renderPluginName($method, 'checkout', $transaction, $combined_payment_name);
 
         $order = [];
         $vm_status = '';
         switch ($status) {
             case 'initialized':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_INITIALIZED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
+                $html = $this->getPaymentResponseHtml($details, $payment_name);
                 $order['order_status'] = $method->status_initialized;
                 $vm_status = 'P';
                 break;
             case 'completed':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_COMPLETED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
+                $html = $this->getPaymentResponseHtml($details, $payment_name);
                 $order['order_status'] = $method->status_completed;
                 $vm_status = 'C';
                 break;
             case 'cancelled':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_CANCELED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
+                $html = $this->getPaymentResponseHtml($details, $payment_name);
                 $order['order_status'] = $method->status_canceled;
                 $vm_status = 'X';
                 break;
             case 'expired':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_EXPIRED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
+                $html = $this->getPaymentResponseHtml($details, $payment_name);
                 $order['order_status'] = $method->status_expired;
                 $vm_status = 'X';
                 break;
             case 'void':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_VOID'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
+                $html = $this->getPaymentResponseHtml($details, $payment_name);
                 $order['order_status'] = $method->status_void;
                 $vm_status = 'D';
                 break;
             case 'declined':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_DECLINED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
+                $html = $this->getPaymentResponseHtml($details, $payment_name);
                 $order['order_status'] = $method->status_declined;
                 $vm_status = 'D';
                 break;
             case 'refunded':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_REFUNDED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
+                $html = $this->getPaymentResponseHtml($details, $payment_name);
                 $order['order_status'] = $method->status_refunded;
                 $vm_status = 'R';
                 break;
             case 'uncleared':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_UNCLEARED_MSG_UNCLEARED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
+                $html = $this->getPaymentResponseHtml($details, $payment_name);
                 $order['order_status'] = $method->status_uncleared;
                 $vm_status = 'X';
                 break;
             case 'shipped':
                 vRequest::setVar('multisafepay_msg', JText::_('VMPAYMENT_MULTISAFEPAY_MSG_SHIPPED'));
-                $html = $this->getPaymentResponseHtml($details, $this->renderPluginName($method));
+                $html = $this->getPaymentResponseHtml($details, $payment_name);
                 $order['order_status'] = $method->status_shipped;
                 $vm_status = 'S';
                 break;
@@ -413,16 +426,6 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
         }
         if ($status !== 'cancelled') {
             $this->emptyCart();
-        }
-
-        // NOTE: Altering the status after all the previous actions are done
-        if ($validation_failed) {
-            JLog::add('Notification for Order #' . $order_number  . ' has been received but is not valid.', JLog::ERROR, 'com_virtuemart');
-
-            // We make the order status as pending, and as unpaid too
-            $order['order_status'] = 'P';
-            $order['paid'] = 0;
-            $model_order->updateStatusForOneOrder($order_id, $order);
         }
 
         if (isset($_GET['type']) && ((string)$_GET['type'] === 'redirect')) {
@@ -593,14 +596,20 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
     /**
      * @param $plugin
      * @param string $where
+     * @param TransactionResponse|null $transaction
+     * @param string|null $resolved_payment_name
      *
      * @return string
      *
      * @throws Exception
      * @since 4.0
      */
-    protected function renderPluginName($plugin, string $where = 'checkout'): string
-    {
+    protected function renderPluginName(
+        $plugin,
+        string $where = 'checkout',
+        ?TransactionResponse $transaction = null,
+        ?string $resolved_payment_name = null
+    ): string {
         $display_logos = '';
         $payment_param = [];
 
@@ -608,7 +617,7 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
         if (!empty($logos)) {
             $display_logos = $this->displayLogos($logos) . ' ';
         }
-        $payment_name = $plugin->payment_name;
+        $payment_name = $resolved_payment_name ?? $this->getWalletCombinedPaymentName($plugin, $transaction) ?? $plugin->payment_name;
         vmdebug('renderPluginName', $payment_param);
 
         return $this->renderByLayout('render_pluginname', [
@@ -616,6 +625,55 @@ class plgVmPaymentMultisafepay extends vmPSPlugin
             'payment_name' => $payment_name,
             'payment_description' => $plugin->payment_desc,
         ]);
+    }
+
+    /**
+     * Builds a payment label from callback details.
+     *
+     * It returns "Wallet (Card)" when both values match supported labels,
+     * otherwise it falls back to the wallet display label only
+     * (Apple Pay/Google Pay), and finally null.
+     *
+     * @param object $plugin
+     * @param TransactionResponse|null $transaction
+     * @return string|null
+     * @since 4.0
+     */
+    private function getWalletCombinedPaymentName(object $plugin, ?TransactionResponse $transaction = null): ?string
+    {
+        if (is_null($transaction)) {
+            return null;
+        }
+
+        $wallet_labels = [
+            'APPLEPAY' => 'Apple Pay',
+            'GOOGLEPAY' => 'Google Pay',
+        ];
+
+        $card_labels = [
+            'AMEX' => 'American Express',
+            'MASTERCARD' => 'Mastercard',
+            'VISA' => 'Visa',
+        ];
+
+        $payment_details = $transaction->getPaymentDetails();
+        $wallet_from_callback = strtoupper((string)$payment_details->get('wallet'));
+        $configured_gateway = strtoupper((string)($plugin->multisafepay_gateway ?? ''));
+        $wallet_code = $wallet_from_callback;
+        if ($wallet_code === '' && isset($wallet_labels[$configured_gateway])) {
+            $wallet_code = $configured_gateway;
+        }
+        $card_code = strtoupper($payment_details->getType());
+
+        if (isset($wallet_labels[$wallet_code]) && isset($card_labels[$card_code])) {
+            return $wallet_labels[$wallet_code] . ' (' . $card_labels[$card_code] . ')';
+        }
+
+        if (!empty($wallet_code) && isset($wallet_labels[$wallet_code])) {
+            return $wallet_labels[$wallet_code];
+        }
+
+        return null;
     }
 
     /**
