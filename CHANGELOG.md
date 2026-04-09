@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ***
 
+## 2.2.0
+Release date: Apr, 9th 2026
+
+### Added
++ DAVAMS-984: Add card names info to Apple Pay and Google Pay payment methods
++ PLGVIR4-61: Add a language file for the admin area
++ DAVAMS-831: Add Bizum payment method
+
+### Changed
++ PLGVIR4-64: Change getIpAddress() to avoid issues with IPv6 format
+
+***
+
 ## 2.1.0
 Release date: Sep, 26th 2024
 
